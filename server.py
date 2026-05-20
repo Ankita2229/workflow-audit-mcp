@@ -21,6 +21,8 @@ from mcp.types import Tool, TextContent
 import audit_checks
 import fixes
 import sagemaker_submit
+import sampler
+import trajectory_builder
 
 app = Server("workflow-audit-mcp")
 
@@ -85,6 +87,39 @@ async def list_tools() -> list[Tool]:
                 "required": ["job_name"],
             },
         ),
+        Tool(
+            name="sample",
+            description=(
+                "Sample on-policy trajectories for all on_policy sources in the experiment YAML. "
+                "Calls the specified model via OpenRouter for each task × run × iteration, "
+                "oracle-scores each completion, and writes episodes to source.path. "
+                "Resume-safe: skips (task, run_idx, iteration) triples already written. "
+                "Requires OPENROUTER_API_KEY env var. Run this before build_trajectory."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "yaml_path": {"type": "string", "description": "Path to experiment YAML file"},
+                },
+                "required": ["yaml_path"],
+            },
+        ),
+        Tool(
+            name="build_trajectory",
+            description=(
+                "Mix trajectory sources defined in the YAML into a single JSONL file. "
+                "Loads each source (on_policy or existing_jsonl), applies drop_models filters, "
+                "samples to the specified fractions without oversampling, sorts by iteration "
+                "if requested, and writes to trajectory.path. Run sample() first for on_policy sources."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "yaml_path": {"type": "string", "description": "Path to experiment YAML file"},
+                },
+                "required": ["yaml_path"],
+            },
+        ),
     ]
 
 
@@ -106,6 +141,14 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
         elif name == "job_status":
             result = sagemaker_submit.job_status(arguments["job_name"])
+            return [TextContent(type="text", text=result)]
+
+        elif name == "sample":
+            result = sampler.sample(arguments["yaml_path"])
+            return [TextContent(type="text", text=result)]
+
+        elif name == "build_trajectory":
+            result = trajectory_builder.build_trajectory(arguments["yaml_path"])
             return [TextContent(type="text", text=result)]
 
         else:
