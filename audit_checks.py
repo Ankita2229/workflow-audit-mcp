@@ -13,6 +13,10 @@ from typing import Any
 import yaml as _yaml
 
 
+def _evals_root() -> Path:
+    return Path(__file__).resolve().parent.parent / "Evals" / "LearningEfficiency"
+
+
 # ── Severity constants ────────────────────────────────────────────────────────
 
 FAIL = "FAIL"
@@ -163,26 +167,26 @@ def check_duplicate_name(cfg: dict, episodes: list[dict], groups: dict) -> dict:
 
 
 def check_task_val_coverage(cfg: dict, episodes: list[dict], groups: dict) -> dict:
-    """FAIL if any task has 0 val groups under a group-level split."""
+    """FAIL if any task has 0 val groups under a task-stratified group-level split."""
     traj_cfg = cfg.get("trajectory", {})
     val_fraction = traj_cfg.get("val_fraction", 0.2)
 
     import random
-    all_groups = list(groups.keys())
-    rng = random.Random(42)
-    rng.shuffle(all_groups)
-    n_val = int(len(all_groups) * val_fraction)
-    val_groups = set(all_groups[:n_val])
+
+    # Simulate the task-stratified split used by the entrypoint:
+    # for each task, shuffle its groups and take max(1, floor(n * val_fraction)) as val.
+    task_groups: dict[str, list[str]] = defaultdict(list)
+    for g in groups:
+        task_groups[_task_from_group(g)].append(g)
 
     task_val: dict[str, int] = defaultdict(int)
-    task_total: dict[str, int] = defaultdict(int)
-    for g in all_groups:
-        task = _task_from_group(g)
-        task_total[task] += 1
-        if g in val_groups:
-            task_val[task] += 1
+    for task, gs in task_groups.items():
+        rng = random.Random(42)
+        rng.shuffle(gs)
+        n_val = max(1, int(len(gs) * val_fraction))
+        task_val[task] = n_val
 
-    missing = [t for t in task_total if task_val[t] == 0]
+    missing = [t for t in task_groups if task_val[t] == 0]
     if missing:
         return {
             "id": "task_val_coverage",
@@ -196,7 +200,10 @@ def check_task_val_coverage(cfg: dict, episodes: list[dict], groups: dict) -> di
     return {
         "id": "task_val_coverage",
         "severity": PASS,
-        "finding": f"All {len(task_total)} tasks covered in val. Min: {task_val[min_task]} groups ({min_task}).",
+        "finding": (
+            f"All {len(task_groups)} tasks covered in val (task-stratified split). "
+            f"Min: {task_val[min_task]} groups ({min_task})."
+        ),
     }
 
 
@@ -676,6 +683,8 @@ def run_audit(yaml_path: str) -> str:
         return "ERROR: trajectory.path not set in YAML."
 
     traj_path = Path(traj_path)
+    if not traj_path.is_absolute():
+        traj_path = _evals_root() / traj_path
     if not traj_path.exists():
         return f"ERROR: trajectory file not found: {traj_path}"
 
