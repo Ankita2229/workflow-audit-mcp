@@ -491,19 +491,73 @@ def check_curriculum_sort(cfg: dict, episodes: list[dict], groups: dict) -> dict
     return {"id": "curriculum_sort", "severity": PASS, "finding": "Trajectory is sorted by iteration (curriculum order confirmed)."}
 
 
-def check_data_mix(cfg: dict, episodes: list[dict], groups: dict) -> dict:
-    """WARN if actual on-policy % differs from intended by >10 points."""
+def check_iteration_distribution(cfg: dict, episodes: list[dict], groups: dict) -> dict:
+    """WARN if any task is missing iterations expected from trajectory.sources n_iters."""
+    # Read expected n_iters from sources block — take the max across all sources
     sources = cfg.get("trajectory", {}).get("sources", [])
-    intended_on_policy = None
+    expected_iters = max(
+        (int(s.get("n_iters", 0)) for s in sources if s.get("n_iters")),
+        default=0,
+    )
+    # Fall back to eval.n_iterations if sources don't specify
+    if not expected_iters:
+        expected_iters = int(cfg.get("eval", {}).get("n_iterations", 0))
+    if not expected_iters:
+        return {"id": "iteration_distribution", "severity": PASS, "finding": "No n_iters specified in YAML — skipping iteration distribution check."}
+
+    # Check per task which iterations are present
+    task_iters: dict[str, set] = defaultdict(set)
+    for g in groups:
+        task = _task_from_group(g)
+        it = _iter_from_group(g)
+        if it > 0:
+            task_iters[task].add(it)
+
+    expected_set = set(range(1, expected_iters + 1))
+    missing: dict[str, list] = {}
+    for task, present in task_iters.items():
+        absent = sorted(expected_set - present)
+        if absent:
+            missing[task] = absent
+
+    if missing:
+        examples = ", ".join(f"{t}(missing iters {v})" for t, v in list(missing.items())[:4])
+        return {
+            "id": "iteration_distribution",
+            "severity": WARN,
+            "finding": (
+                f"{len(missing)} tasks missing iterations (expected 1–{expected_iters} from YAML). "
+                f"Examples: {examples}"
+            ),
+        }
+
+    return {
+        "id": "iteration_distribution",
+        "severity": PASS,
+        "finding": f"All tasks have all {expected_iters} iterations (read from YAML sources.n_iters).",
+    }
+
+
+def check_data_mix(cfg: dict, episodes: list[dict], groups: dict) -> dict:
+    """WARN if actual on-policy % differs from intended by >10 points.
+    On-policy model names and intended fraction are read from trajectory.sources."""
+    sources = cfg.get("trajectory", {}).get("sources", [])
+    if not sources:
+        return {"id": "data_mix", "severity": PASS, "finding": "No sources block in YAML — skipping mix check."}
+
+    # Collect intended on-policy models and fraction directly from YAML
+    on_policy_models = set()
+    intended_on_policy = 0.0
     for s in sources:
         if s.get("type") == "on_policy":
-            intended_on_policy = s.get("fraction")
-            break
+            model = s.get("model", "")
+            if model:
+                on_policy_models.add(model.lower())
+            intended_on_policy += float(s.get("fraction", 0))
 
-    if intended_on_policy is None:
-        return {"id": "data_mix", "severity": PASS, "finding": "No intended on-policy fraction specified — skipping mix check."}
+    if not on_policy_models:
+        return {"id": "data_mix", "severity": PASS, "finding": "No on_policy source in YAML — skipping mix check."}
 
-    on_policy_models = {"deepseek/deepseek-r1-distill-qwen-32b", "deepseek/deepseek-r1-distill-qwen-7b"}
     on_policy_count = 0
     for ep in episodes:
         meta = ep.get("metadata", {})
@@ -514,20 +568,21 @@ def check_data_mix(cfg: dict, episodes: list[dict], groups: dict) -> dict:
     actual = on_policy_count / len(episodes) if episodes else 0
     diff = abs(actual - intended_on_policy)
 
+    model_list = ", ".join(sorted(on_policy_models))
     if diff > 0.10:
         return {
             "id": "data_mix",
             "severity": WARN,
             "finding": (
                 f"Actual on-policy fraction ({actual:.0%}) differs from intended ({intended_on_policy:.0%}) "
-                f"by {diff:.0%} (threshold: 10%)."
+                f"by {diff:.0%} (threshold: 10%). On-policy models from YAML: {model_list}"
             ),
         }
 
     return {
         "id": "data_mix",
         "severity": PASS,
-        "finding": f"Data mix on target: actual {actual:.0%} on-policy vs intended {intended_on_policy:.0%}.",
+        "finding": f"Data mix on target: actual {actual:.0%} on-policy vs intended {intended_on_policy:.0%}. Models: {model_list}",
     }
 
 
@@ -601,6 +656,7 @@ SOFT_CHECKS = [
     check_think_block_format,
     check_token_truncation,
     check_curriculum_sort,
+    check_iteration_distribution,
     check_data_mix,
     check_metadata_completeness,
     check_advantage_floor_rate,
