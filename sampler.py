@@ -149,13 +149,20 @@ def sample(yaml_path: str) -> str:
         from benchmark.oracle import load_oracle, predict
         from train.config import TRAIN_BIO_TASKS
 
-        # Register all tasks by importing their configs
+        # Register all tasks by importing each task's config module directly
         import importlib
-        for pkg in ("tasks.bio", "tasks.education"):
-            try:
-                importlib.import_module(pkg)
-            except ImportError:
-                pass
+        tasks_root = _evals_root() / "tasks"
+        for domain in ("bio", "education"):
+            domain_dir = tasks_root / domain
+            if not domain_dir.exists():
+                continue
+            for task_dir in sorted(domain_dir.iterdir()):
+                config_file = task_dir / "config.py"
+                if config_file.exists():
+                    try:
+                        importlib.import_module(f"tasks.{domain}.{task_dir.name}.config")
+                    except Exception:
+                        pass
     except ImportError as e:
         return f"ERROR importing benchmark modules: {e}"
 
